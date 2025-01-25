@@ -48,14 +48,10 @@ async fn add(
     }
     drop(cache);
 
-    if let Err(e) = ctx
-        .data()
+    ctx.data()
         .streamer_tx
         .send_async((streamer, Action::ADD))
-        .await
-    {
-        eprintln!("{}", e);
-    }
+        .await?;
 
     ctx.reply("Streamer added").await?;
     Ok(())
@@ -92,10 +88,7 @@ async fn remove(
     }
     drop(cache);
 
-    if let Err(e) = ctx.data().streamer_tx.send((streamer, Action::REMOVE)) {
-        eprintln!("{}", e);
-    }
-
+    ctx.data().streamer_tx.send((streamer, Action::REMOVE))?;
     ctx.reply("Streamer removed").await?;
     Ok(())
 }

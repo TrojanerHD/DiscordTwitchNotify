@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{collections::HashMap, env};
 
 use flume::{Receiver, Sender};
@@ -60,18 +60,14 @@ async fn main() -> Result<()> {
                             if is_new.is_none_or(|new| new) {
                                 register_in_guild(ctx, &framework.options().commands, guild.id)
                                     .await
-                                    .unwrap_or_else(|_| {
-                                        eprintln!("Could not add commands to guild {}", guild.id)
-                                    });
+                                    .with_context(|| format!("Could not add commands to guild {}", guild.id))?
                             }
                         }
                         FullEvent::Ready { data_about_bot } => {
                             for guild in data_about_bot.guilds.clone() {
                                 register_in_guild(ctx, &framework.options().commands, guild.id)
                                     .await
-                                    .unwrap_or_else(|_| {
-                                        eprintln!("Could not add commands to guild {}", guild.id)
-                                    });
+                                    .with_context(|| format!("Could not add commands to guild {}", guild.id))?
                             }
                             while let Ok(message) = context_data.live_rx.recv_async().await {
                                 let cache = context_data.cache.lock().await;
@@ -118,9 +114,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .flat_map(|(_key, value)| value.streamers.clone())
                 {
-                    if let Err(e) = streamer_tx.send_async((streamer, Action::ADD)).await {
-                        eprintln!("{}", e);
-                    }
+                    streamer_tx.send_async((streamer, Action::ADD)).await?
                 }
                 // streamer_tx.send(value)
                 Ok(ContextData {
