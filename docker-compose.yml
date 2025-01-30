@@ -1,10 +1,11 @@
 services:
   discord-twitch-notify:
-    image: ghcr.io/trojanerhd/discord-twitch-notify:latest
+    # image: ghcr.io/trojanerhd/discord-twitch-notify:latest
     # Build the container locally
-    # build: .
+    build: .
     env_file: .env
     volumes:
+      - ./store.json:/usr/src/trojaner/store.json
       - discord-twitch-notify:/usr/src/trojaner
     # Simple port forwarding
     # ports:
