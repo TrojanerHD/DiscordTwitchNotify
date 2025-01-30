@@ -137,7 +137,9 @@ impl WebsocketClient {
                     _ => Ok(()),
                 }
             }
-            tungstenite::Message::Close(_) => todo!(),
+            tungstenite::Message::Close(e) => {
+                panic!("Close message received with content: {:?}", e)
+            }
             _ => Ok(()),
         }
     }
