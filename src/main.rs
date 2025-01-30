@@ -42,7 +42,11 @@ pub mod store;
 pub mod twitch;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    dotenvy::dotenv()?;
+    match dotenvy::dotenv() {
+        Ok(_) => Ok(()),
+        Err(e) if e.not_found() => Ok(()),
+        Err(e) => Err(e),
+    }?;
 
     let (streamer_tx, streamer_rx) = flume::unbounded();
     let (live_tx, live_rx) = flume::unbounded();
