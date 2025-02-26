@@ -13,8 +13,8 @@ use poise::{
 
 #[derive(Debug)]
 pub enum Action {
-    ADD,
-    REMOVE,
+    Add,
+    Remove,
 }
 
 type StreamerMessage = (String, Action);
@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .flat_map(|(_key, value)| value.streamers.clone())
                 {
-                    streamer_tx.send_async((streamer, Action::ADD)).await?
+                    streamer_tx.send_async((streamer, Action::Add)).await?
                 }
                 // streamer_tx.send(value)
                 Ok(ContextData {

@@ -50,7 +50,7 @@ async fn add(
 
     ctx.data()
         .streamer_tx
-        .send_async((streamer, Action::ADD))
+        .send_async((streamer, Action::Add))
         .await?;
 
     ctx.reply("Streamer added").await?;
@@ -88,7 +88,7 @@ async fn remove(
     }
     drop(cache);
 
-    ctx.data().streamer_tx.send((streamer, Action::REMOVE))?;
+    ctx.data().streamer_tx.send((streamer, Action::Remove))?;
     ctx.reply("Streamer removed").await?;
     Ok(())
 }

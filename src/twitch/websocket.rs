@@ -244,7 +244,7 @@ impl WebsocketClient {
 
         while let Ok((streamer_action, action)) = streamer_rx.recv_async().await {
             match action {
-                Action::ADD => {
+                Action::Add => {
                     if let Some(streamer) = subscriptions.get_mut(&streamer_action) {
                         streamer.subscriptions += 1;
                     } else {
@@ -255,7 +255,7 @@ impl WebsocketClient {
                         );
                     }
                 }
-                Action::REMOVE => {
+                Action::Remove => {
                     if subscriptions.len() == 1 {
                         break;
                     }
