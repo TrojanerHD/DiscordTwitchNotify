@@ -6,4 +6,7 @@ COPY Cargo.lock .
 COPY src/ src/
 RUN cargo build --release
 
-CMD ["./target/release/twitch-notify"]
+RUN cp target/release/twitch-notify twitch-notify
+RUN rm -r src Cargo.toml Cargo.lock target
+
+CMD ["./twitch-notify"]
