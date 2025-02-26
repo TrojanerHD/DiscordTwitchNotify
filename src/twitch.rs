@@ -11,7 +11,7 @@ pub mod websocket;
 
 pub fn run(
     streamer_rx: Receiver<StreamerMessage>,
-    live_rx: Sender<String>,
+    live_tx: Sender<String>,
 ) -> JoinHandle<Result<()>> {
     let client = HelixClient::with_client(<reqwest::Client>::default());
     let token = twitch_oauth2::AccessToken::new(
@@ -32,7 +32,7 @@ pub fn run(
         token,
         client,
         streamer_rx,
-        live_rx,
+        live_tx,
     };
 
     let websocket_client = tokio::spawn(async move { websocket_client.run().await });

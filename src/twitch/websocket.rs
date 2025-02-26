@@ -29,7 +29,7 @@ pub struct WebsocketClient {
     pub token: AccessToken,
     pub client: HelixClient<'static, reqwest::Client>,
     pub streamer_rx: Receiver<StreamerMessage>,
-    pub live_rx: Sender<String>,
+    pub live_tx: Sender<String>,
 }
 impl WebsocketClient {
     pub async fn connect(
@@ -114,7 +114,7 @@ impl WebsocketClient {
                                     }),
                                 ..
                             }) => {
-                                if let Err(e) = self.live_rx.send(broadcaster_user_name.to_string())
+                                if let Err(e) = self.live_tx.send(broadcaster_user_name.to_string())
                                 {
                                     eprintln!("{}", e);
                                 }
