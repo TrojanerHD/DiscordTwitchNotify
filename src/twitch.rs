@@ -26,16 +26,21 @@ pub fn run(
     //     Vec::new(),
     // )
     // .await?;
-    let websocket_client = websocket::WebsocketClient {
-        connect_url: twitch_api::TWITCH_EVENTSUB_WEBSOCKET_URL.clone(),
-        session_id: None,
-        token,
-        client,
-        streamer_rx,
-        live_tx,
-    };
 
-    let websocket_client = tokio::spawn(async move { websocket_client.run().await });
+    let websocket_client = tokio::spawn(async move {
+        while let Ok((streamer_action, _action)) = streamer_rx.recv_async().await {
+            let websocket_client = websocket::WebsocketClient::new(
+                twitch_api::TWITCH_EVENTSUB_WEBSOCKET_URL.clone(),
+                None,
+                token.clone(),
+                client.clone(),
+                streamer_rx.clone(),
+                live_tx.clone(),
+            );
+            websocket_client.run(streamer_action).await?;
+        }
+        Ok(())
+    });
 
     websocket_client
 }

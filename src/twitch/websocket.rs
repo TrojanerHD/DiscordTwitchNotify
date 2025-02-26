@@ -1,6 +1,8 @@
 use anyhow::Result;
 use flume::{Receiver, Sender};
+use futures::StreamExt;
 use std::{collections::HashMap, error::Error};
+use tokio::task::JoinHandle;
 
 use tokio_tungstenite::tungstenite;
 use twitch_api::{
@@ -15,23 +17,70 @@ use twitch_api::{
 
 use crate::{Action, StreamerMessage};
 
-#[derive(Debug)]
+#[derive(Clone)]
 struct Streamer {
     subscriptions: u32,
     id: EventSubId,
 }
+impl Streamer {
+    async fn get_streamer(
+        streamer_action: String,
+        token: &UserToken,
+        client: &HelixClient<'static, reqwest::Client>,
+        transport: &Transport,
+    ) -> Result<Self> {
+        Ok(Self {
+            id: client
+                .create_eventsub_subscription(
+                    eventsub::stream::StreamOnlineV1::broadcaster_user_id(
+                        client
+                            .get_user_from_login(&streamer_action, token)
+                            .await?
+                            .expect("Could not get user from login {key}")
+                            .id,
+                    ),
+                    transport.clone(),
+                    token,
+                )
+                .await?
+                .id,
+            subscriptions: 1,
+        })
+    }
+}
 
+type AllRemovedHandle = JoinHandle<Result<()>>;
 // This code is mostly copy-pasted from
 // https://github.com/twitch-rs/twitch_api/blob/1158b7d840d626af5d68498828e39a209a7f322a/examples/eventsub_websocket/src/websocket.rs
 pub struct WebsocketClient {
-    pub connect_url: url::Url,
-    pub session_id: Option<String>,
+    connect_url: url::Url,
+    session_id: Option<String>,
     pub token: AccessToken,
     pub client: HelixClient<'static, reqwest::Client>,
-    pub streamer_rx: Receiver<StreamerMessage>,
-    pub live_tx: Sender<String>,
+    streamer_rx: Receiver<StreamerMessage>,
+    live_tx: Sender<String>,
+    init_streamer: Option<String>,
 }
 impl WebsocketClient {
+    pub fn new(
+        connect_url: url::Url,
+        session_id: Option<String>,
+        token: AccessToken,
+        client: HelixClient<'static, reqwest::Client>,
+        streamer_rx: Receiver<StreamerMessage>,
+        live_tx: Sender<String>,
+    ) -> Self {
+        Self {
+            connect_url,
+            session_id,
+            token,
+            client,
+            streamer_rx,
+            live_tx,
+            init_streamer: None,
+        }
+    }
+
     pub async fn connect(
         &self,
     ) -> Result<
@@ -56,35 +105,52 @@ impl WebsocketClient {
     }
 
     /// Run the websocket subscriber
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self, streamer: String) -> Result<()> {
+        self.init_streamer = Some(streamer);
         // Establish the stream
         let mut s = self.connect().await.expect("when establishing connection");
+        let mut all_removed = None;
         // Loop over the stream, processing messages as they come in.
         loop {
             tokio::select!(
-            Some(msg) = futures::StreamExt::next(&mut s) => {
-                let msg = match msg {
-                    Err(tungstenite::Error::Protocol(
-                        tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-                    )) => {
-                        eprintln!(
-                            "connection was sent an unexpected frame or was reset, reestablishing it"
-                        );
-                        s = self
-                            .connect()
-                            .await
-                            .expect("when reestablishing connection");
-                        continue
+                Some(msg) = s.next() => {
+                    let msg = match msg {
+                        Err(tungstenite::Error::Protocol(
+                            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                        )) => {
+                            eprintln!(
+                                "connection was sent an unexpected frame or was reset, reestablishing it"
+                            );
+                            s = self
+                                .connect()
+                                .await
+                                .expect("when reestablishing connection");
+                            continue
+                        }
+                        _ => msg.expect("when getting message"),
+                    };
+                    all_removed = all_removed.or(self.process_message(msg).await?);
+                },
+                _ = async {
+                    if let Some(act_all_removed) = &mut all_removed {
+                        act_all_removed.await
+                    } else {
+                        std::future::pending().await
                     }
-                    _ => msg.expect("when getting message"),
-                };
-                self.process_message(msg).await?
-            })
+                } => {
+                    break;
+                },
+
+            )
         }
+        s.close(None).await.map_err(|err| err.into())
     }
 
     /// Process a message from the websocket
-    pub async fn process_message(&mut self, msg: tungstenite::Message) -> Result<()> {
+    pub async fn process_message(
+        &mut self,
+        msg: tungstenite::Message,
+    ) -> Result<Option<AllRemovedHandle>> {
         match msg {
             tungstenite::Message::Text(s) => {
                 // Parse the message into a [twitch_api::eventsub::EventsubWebsocketData]
@@ -96,10 +162,7 @@ impl WebsocketClient {
                     | EventsubWebsocketData::Reconnect {
                         payload: ReconnectPayload { session },
                         ..
-                    } => {
-                        self.process_welcome_message(session).await?;
-                        Ok(())
-                    }
+                    } => Ok(Some(self.process_welcome_message(session).await?)),
                     // Here is where you would handle the events you want to listen to
                     EventsubWebsocketData::Notification {
                         metadata: _,
@@ -121,30 +184,34 @@ impl WebsocketClient {
                             }
                             _ => {}
                         }
-                        Ok(())
+                        Ok(None)
                     }
                     EventsubWebsocketData::Revocation {
                         metadata,
                         payload: _,
                     } => {
                         println!("got revocation event: {metadata:?}");
-                        Ok(())
+                        Ok(None)
                     }
                     EventsubWebsocketData::Keepalive {
                         metadata: _,
                         payload: _,
-                    } => Ok(()),
-                    _ => Ok(()),
+                    } => Ok(None),
+                    _ => Ok(None),
                 }
             }
             tungstenite::Message::Close(e) => {
                 panic!("Close message received with content: {:?}", e)
             }
-            _ => Ok(()),
+            _ => Ok(None),
         }
     }
 
-    pub async fn process_welcome_message(&mut self, data: SessionData<'_>) -> Result<()> {
+    // Returns JoinHandle that completes when the websocket shall be closed because all streamers were removed
+    pub async fn process_welcome_message(
+        &mut self,
+        data: SessionData<'_>,
+    ) -> Result<AllRemovedHandle> {
         self.session_id = Some(data.id.to_string());
         if let Some(url) = data.reconnect_url {
             self.connect_url = url.parse()?;
@@ -154,10 +221,10 @@ impl WebsocketClient {
         let transport = eventsub::Transport::websocket(data.id);
         let client = self.client.clone();
         let streamer_rx = self.streamer_rx.clone();
-        tokio::spawn(async {
-            Self::streamer_listener(client, streamer_rx, transport, token).await
-        });
-        Ok(())
+        let init_streamer = self.init_streamer.clone();
+        Ok(tokio::spawn(async {
+            Self::streamer_listener(client, streamer_rx, transport, token, init_streamer).await
+        }))
     }
 
     async fn streamer_listener(
@@ -165,8 +232,16 @@ impl WebsocketClient {
         streamer_rx: Receiver<StreamerMessage>,
         transport: Transport,
         token: UserToken,
+        init_streamer: Option<String>,
     ) -> Result<()> {
         let mut subscriptions: HashMap<String, Streamer> = HashMap::new();
+        if let Some(act_init_streamer) = init_streamer {
+            subscriptions.insert(
+                act_init_streamer.clone(),
+                Streamer::get_streamer(act_init_streamer, &token, &client, &transport).await?,
+            );
+        }
+
         while let Ok((streamer_action, action)) = streamer_rx.recv_async().await {
             match action {
                 Action::ADD => {
@@ -175,27 +250,15 @@ impl WebsocketClient {
                     } else {
                         subscriptions.insert(
                             streamer_action.clone(),
-                            Streamer {
-                                id: client
-                                    .create_eventsub_subscription(
-                                        eventsub::stream::StreamOnlineV1::broadcaster_user_id(
-                                            client
-                                                .get_user_from_login(&streamer_action, &token)
-                                                .await?
-                                                .expect("Could not get user from login {key}")
-                                                .id,
-                                        ),
-                                        transport.clone(),
-                                        &token,
-                                    )
-                                    .await?
-                                    .id,
-                                subscriptions: 1,
-                            },
+                            Streamer::get_streamer(streamer_action, &token, &client, &transport)
+                                .await?,
                         );
                     }
                 }
                 Action::REMOVE => {
+                    if subscriptions.len() == 1 {
+                        break;
+                    }
                     if let Some(streamer) = subscriptions.get_mut(&streamer_action) {
                         if streamer.subscriptions == 1 {
                             client
