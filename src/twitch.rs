@@ -11,6 +11,7 @@ pub mod websocket;
 
 pub fn run(
     streamer_rx: Receiver<StreamerMessage>,
+    streamer_tx: Sender<StreamerMessage>,
     live_tx: Sender<String>,
 ) -> JoinHandle<Result<()>> {
     let client = HelixClient::with_client(<reqwest::Client>::default());
@@ -35,6 +36,7 @@ pub fn run(
                 token.clone(),
                 client.clone(),
                 streamer_rx.clone(),
+                streamer_tx.clone(),
                 live_tx.clone(),
             );
             websocket_client.run(streamer_action).await?;

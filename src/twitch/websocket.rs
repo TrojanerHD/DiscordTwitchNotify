@@ -1,7 +1,7 @@
 use anyhow::Result;
 use flume::{Receiver, Sender};
 use futures::StreamExt;
-use std::{collections::HashMap, error::Error};
+use std::{collections::HashMap, error::Error, io};
 use tokio::task::JoinHandle;
 
 use tokio_tungstenite::tungstenite;
@@ -49,7 +49,8 @@ impl Streamer {
     }
 }
 
-type AllRemovedHandle = JoinHandle<Result<()>>;
+type AllRemovedHandle = JoinHandle<Result<Vec<String>>>;
+
 // This code is mostly copy-pasted from
 // https://github.com/twitch-rs/twitch_api/blob/1158b7d840d626af5d68498828e39a209a7f322a/examples/eventsub_websocket/src/websocket.rs
 pub struct WebsocketClient {
@@ -58,8 +59,9 @@ pub struct WebsocketClient {
     pub token: AccessToken,
     pub client: HelixClient<'static, reqwest::Client>,
     streamer_rx: Receiver<StreamerMessage>,
+    streamer_tx: Sender<StreamerMessage>,
     live_tx: Sender<String>,
-    init_streamer: Option<String>,
+    init_streamers: Vec<String>,
 }
 impl WebsocketClient {
     pub fn new(
@@ -68,6 +70,7 @@ impl WebsocketClient {
         token: AccessToken,
         client: HelixClient<'static, reqwest::Client>,
         streamer_rx: Receiver<StreamerMessage>,
+        streamer_tx: Sender<StreamerMessage>,
         live_tx: Sender<String>,
     ) -> Self {
         Self {
@@ -76,8 +79,9 @@ impl WebsocketClient {
             token,
             client,
             streamer_rx,
+            streamer_tx,
             live_tx,
-            init_streamer: None,
+            init_streamers: Vec::new(),
         }
     }
 
@@ -106,7 +110,7 @@ impl WebsocketClient {
 
     /// Run the websocket subscriber
     pub async fn run(mut self, streamer: String) -> Result<()> {
-        self.init_streamer = Some(streamer);
+        self.init_streamers = vec![streamer];
         // Establish the stream
         let mut s = self.connect().await.expect("when establishing connection");
         let mut all_removed = None;
@@ -117,28 +121,35 @@ impl WebsocketClient {
                     let msg = match msg {
                         Err(tungstenite::Error::Protocol(
                             tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-                        )) => {
+                        )) | Err(tungstenite::Error::Io(io::Error { .. } )) => {
                             eprintln!(
                                 "connection was sent an unexpected frame or was reset, reestablishing it"
                             );
-                            s = self
-                                .connect()
-                                .await
-                                .expect("when reestablishing connection");
+                            self.streamer_tx.send_async(("".to_owned(), Action::Abort)).await?; // Can be empty string because the receiver ignores the string on Action::Abort
                             continue
                         }
                         _ => msg.expect("when getting message"),
                     };
                     all_removed = all_removed.or(self.process_message(msg).await?);
                 },
-                _ = async {
+                subscriptions = async {
                     if let Some(act_all_removed) = &mut all_removed {
-                        act_all_removed.await
+                        act_all_removed.await?
                     } else {
                         std::future::pending().await
                     }
                 } => {
-                    break;
+                    let Ok(act_subscriptions) = subscriptions else {
+                        break;
+                    };
+                    if act_subscriptions.is_empty() {
+                        break;
+                    }
+                    self.init_streamers = act_subscriptions;
+                    s = self
+                        .connect()
+                        .await
+                        .expect("when reestablishing connection");
                 },
 
             )
@@ -221,9 +232,9 @@ impl WebsocketClient {
         let transport = eventsub::Transport::websocket(data.id);
         let client = self.client.clone();
         let streamer_rx = self.streamer_rx.clone();
-        let init_streamer = self.init_streamer.clone();
+        let init_streamers = self.init_streamers.clone();
         Ok(tokio::spawn(async {
-            Self::streamer_listener(client, streamer_rx, transport, token, init_streamer).await
+            Self::streamer_listener(client, streamer_rx, transport, token, init_streamers).await
         }))
     }
 
@@ -232,13 +243,13 @@ impl WebsocketClient {
         streamer_rx: Receiver<StreamerMessage>,
         transport: Transport,
         token: UserToken,
-        init_streamer: Option<String>,
-    ) -> Result<()> {
+        init_streamers: Vec<String>,
+    ) -> Result<Vec<String>> {
         let mut subscriptions: HashMap<String, Streamer> = HashMap::new();
-        if let Some(act_init_streamer) = init_streamer {
+        for init_streamer in init_streamers {
             subscriptions.insert(
-                act_init_streamer.clone(),
-                Streamer::get_streamer(act_init_streamer, &token, &client, &transport).await?,
+                init_streamer.clone(),
+                Streamer::get_streamer(init_streamer, &token, &client, &transport).await?,
             );
         }
 
@@ -270,8 +281,9 @@ impl WebsocketClient {
                         }
                     }
                 }
+                Action::Abort => break,
             }
         }
-        Ok(())
+        Ok(subscriptions.into_keys().collect::<Vec<_>>())
     }
 }

@@ -15,6 +15,7 @@ use poise::{
 pub enum Action {
     Add,
     Remove,
+    Abort,
 }
 
 type StreamerMessage = (String, Action);
@@ -49,6 +50,7 @@ async fn main() -> Result<()> {
     }?;
 
     let (streamer_tx, streamer_rx) = flume::unbounded();
+    let streamer_tx_cloned = streamer_tx.clone();
     let (live_tx, live_rx) = flume::unbounded();
 
     let token = env::var("DISCORD_TOKEN").expect("No DISCORD_TOKEN in env provided");
@@ -141,7 +143,7 @@ async fn main() -> Result<()> {
             .await
             .map_err(|err| err.into())
     });
-    let websocket = twitch::run(streamer_rx, live_tx);
+    let websocket = twitch::run(streamer_rx, streamer_tx_cloned, live_tx);
     tokio::try_join!(flatten(websocket), flatten(discord))?;
     Ok(())
 }
