@@ -121,13 +121,18 @@ impl WebsocketClient {
                     let msg = match msg {
                         Err(tungstenite::Error::Protocol(
                             tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-                        )) | Err(tungstenite::Error::Io(io::Error { .. } )) => {
+                        )) => {
                             eprintln!(
                                 "connection was sent an unexpected frame or was reset, reestablishing it"
                             );
                             self.streamer_tx.send_async(("".to_owned(), Action::Abort)).await?; // Can be empty string because the receiver ignores the string on Action::Abort
                             continue
-                        }
+                        },
+                        Err(tungstenite::Error::Io(e)) => {
+                            eprintln!("Io error {e} restarting");
+                            self.streamer_tx.send_async(("".to_owned(), Action::Abort)).await?; // Can be empty string because the receiver ignores the string on Action::Abort
+                            continue
+                        },
                         _ => msg.expect("when getting message"),
                     };
                     all_removed = all_removed.or(self.process_message(msg).await?);
