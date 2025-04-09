@@ -1,7 +1,7 @@
 use anyhow::Result;
 use flume::{Receiver, Sender};
 use futures::StreamExt;
-use std::{collections::HashMap, error::Error, io};
+use std::{collections::HashMap, error::Error};
 use tokio::task::JoinHandle;
 
 use tokio_tungstenite::tungstenite;
@@ -217,7 +217,11 @@ impl WebsocketClient {
                 }
             }
             tungstenite::Message::Close(e) => {
-                panic!("Close message received with content: {:?}", e)
+                eprintln!("Close message {:?} received, restarting", e);
+                self.streamer_tx
+                    .send_async(("".to_owned(), Action::Abort))
+                    .await?; // Can be empty string because the receiver ignores the string on Action::Abort
+                Ok(None)
             }
             _ => Ok(None),
         }
